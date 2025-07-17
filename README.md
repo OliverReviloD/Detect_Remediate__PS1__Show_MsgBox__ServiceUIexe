@@ -1,4 +1,4 @@
-Using Intune (Remediation PS1)  or SCCM ( Configuration nBaseline PS1)
+Using Intune (Remediation PS1)  or SCCM ( Configuration Baseline PS1)
 - your detection script detects any kind of incomompliance
 - your remediation is able to solve the issue
 
