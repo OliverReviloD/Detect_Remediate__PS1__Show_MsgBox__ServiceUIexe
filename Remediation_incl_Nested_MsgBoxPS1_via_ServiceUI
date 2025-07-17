@@ -1,0 +1,283 @@
+
+<#
+Msgbox.ps1
+
+        Clear-Host
+        function show-msgbox([string]$Message, [string]$WindowTitle, [int]$Buttons)
+            {
+        Add-Type @"
+        using System;
+        using System.Runtime.InteropServices;
+
+        public class MyMessageDialog
+            {
+            // Use DllImport to import the Win32 MessageBox function.
+            [DllImport("user32.dll", CharSet = CharSet.Unicode)]
+            public static extern int MessageBox(IntPtr hWnd, String text, String caption, uint type);
+            }
+        "@
+
+            [MyMessageDialog]::MessageBox(0, $Message, $WindowTitle, $Buttons)
+            }
+
+        # Buttons 3       ->   YES-NO-CANCEL
+        #
+        # BUttons 4096    ->   SystemModal -> bring to front
+        #
+        $messageboxreturn = show-msgbox -Message "Dies ist meine Nachricht" -WindowTitle "Dies ist der Fenstertitel" -Buttons ( 3 + 4096 )
+        write-output "Messagebox Return value '$messageboxreturn'"
+
+        switch  ( $messageboxreturn) {
+            '1'     { $OutPutString = "User selected button 'OKAY'   -> LastExitCode = $messageboxreturn" }
+            '2'     { $OutPutString = "User selected button 'Cancel' -> LastExitCode = $messageboxreturn" }
+            '6'     { $OutPutString = "User selected button 'YES'    -> LastExitCode = $messageboxreturn" }
+            '7'     { $OutPutString = "User selected button 'NO'     -> LastExitCode = $messageboxreturn" }
+            default { $OutPutString = "This script need improvement - MsgBox.PS1 returns '$messageboxreturn'     -> LastExitCode = $messageboxreturn"  }
+            }
+        Write-OutPut $OutPutString     #  only for SCCM and INTUNE required
+        exit $messageboxreturn
+#>
+
+cls
+[bool]$WriteTranscriptLog = $True
+[String]$LogFolder        = "C:\DELL"   # will get overwritten with "C:\Windows\Logs" when started with ELEVATION
+
+
+
+#region IsElevated
+# ServiceUi.Exe requires at least 'Elevation'
+$IsElevated = $False 
+if ((New-Object Security.Principal.WindowsPrincipal([Security.Principal.WindowsIdentity]::GetCurrent())).IsInRole([Security.Principal.WindowsBuiltInRole]::Administrator))
+    { 
+    $IsElevated = $True 
+    }
+#endregion IsElevated
+
+
+
+#region UserContext
+#  Intune  ->  'NT-AUTORITÄT\SYSTEM'     or    'NT AUTHORITY\SYSTEM'   or ...
+$IsService = $false 
+$Context = $([System.Security.Principal.WindowsIdentity]::GetCurrent().Name)
+if ( $Context -like "NT AUTHORITY*SYSTEM" -or $Context -like "NT-AUT*SYSTEM")      
+    { 
+    $IsService = $True 
+    }
+#endregion UserContext
+
+
+
+#region LogFileName
+#
+#  for Intune usage  use a dedicated LogFileName - else the log file name is a GUID  -or  Detection.PS1    
+#
+$LogFileName  = "Remediation_incl_Nested_MsgBoxPS1_via_ServiceUI"
+
+#  Intune  ->  'NT-AUTORIT T\SYSTEM'
+if ( $IsService -eq $True )       
+    { 
+    $LogFileName = $LogFileName 
+    }
+else                              
+    { 
+    $LogFileName = $MyInvocation.MyCommand.Name  
+    }
+$LogFileName = $LogFileName.Replace(".PS1","")   
+
+
+if ( $IsElevated -eq $True )      
+    { 
+    $LogFolder = "$env:SystemDrive\Windows\logs" 
+    }
+else
+    { 
+    $LogFolder = $LogFolder 
+    }
+$Log_File     = $LogFolder + "\$($LogtFileName).log"
+
+#endregion LogFileName
+
+
+
+If ( $WriteTranscriptLog -eq $true )  
+    {
+    $Log_File_TransScript = $LogFolder + "\$($LogtFileName)_transcript.log"
+    Start-Transcript -Path $Log_File_TransScript -Append | out-null
+    }
+
+
+
+if ( $IsService -eq $True ) 
+    { 
+    Write-OutPut  "Script is started in context '$Context'   - started via any service  - OKAY" 
+    }
+else
+    { 
+    Write-OutPut  "Script is started in context '$Context'   - not started via any service - it may not work completely"   
+    }
+
+
+#region Create_Temp_Ps1File
+
+[String]$FileContent = ""
+[String]$RandomFileName = ""      #  filename for the MsgBox.PS1
+
+# create a random file name
+$RandomFileName = "$Env:Temp\" + [System.IO.Path]::GetRandomFileName() + ".ps1"    # append '.PS1', else PowerShell.exe will not start the script
+# $RandomFileName   #   e.g. ->  <Userprofile>\AppData\Local\Temp\mw5um00i.bll.ps1
+if ( test-Path $RandomFileName ) 
+    { 
+    remove-item -Path $RandomFileName -force  
+    }
+Write-OutPut  "creating temp PS1 ( content is included in (this) remediation script )"
+
+# define the PS1 file content for the MsgBox
+$FileContent = $FileContent + "`r`n" + "Clear-Host"
+$FileContent = $FileContent + "`r`n" + "function show-msgbox([string]`$Message, [string]`$WindowTitle, [int]`$Buttons)" 
+$FileContent = $FileContent + "`r`n" + "    {"
+$FileContent = $FileContent + "`r`n" + "Add-Type @"""
+$FileContent = $FileContent + "`r`n" + "using System;"
+$FileContent = $FileContent + "`r`n" + "using System.Runtime.InteropServices;"
+$FileContent = $FileContent + "`r`n" + ""
+$FileContent = $FileContent + "`r`n" + "public class MyMessageDialog"
+$FileContent = $FileContent + "`r`n" + "    {"
+$FileContent = $FileContent + "`r`n" + "    // Use DllImport to import the Win32 MessageBox function."
+$FileContent = $FileContent + "`r`n" + "    [DllImport(""user32.dll"", CharSet = CharSet.Unicode)]"
+$FileContent = $FileContent + "`r`n" + "    public static extern int MessageBox(IntPtr hWnd, String text, String caption, uint type);"
+$FileContent = $FileContent + "`r`n" + "    }"
+$FileContent = $FileContent + "`r`n" + """@"
+$FileContent = $FileContent + "`r`n" + ""
+$FileContent = $FileContent + "`r`n" + "    [MyMessageDialog]::MessageBox(0, `$Message, `$WindowTitle, `$Buttons)"
+$FileContent = $FileContent + "`r`n" + "    }"
+$FileContent = $FileContent + "`r`n"
+$FileContent = $FileContent + "`r`n" + "# Buttons 3       ->   YES-NO-CANCEL"
+$FileContent = $FileContent + "`r`n" + "#"
+$FileContent = $FileContent + "`r`n" + "# BUttons 4096    ->   SystemModal -> bring to front"
+$FileContent = $FileContent + "`r`n" + "`$messageboxreturn = show-msgbox -Message ""Dies ist meine Nachricht"" -WindowTitle ""Dies ist der Fenstertitel"" -Buttons ( 3 + 4096 )"
+$FileContent = $FileContent + "`r`n" + "write-output ""Messagebox Return value '`$messageboxreturn'"""
+$FileContent = $FileContent + "`r`n" 
+$FileContent = $FileContent + "`r`n" + "switch  ( `$messageboxreturn) {"
+$FileContent = $FileContent + "`r`n" + "    '1'     { `$OutPutString = ""User selected button 'OKAY'   -> LastExitCode = `$messageboxreturn"" }"
+$FileContent = $FileContent + "`r`n" + "    '2'     { `$OutPutString = ""User selected button 'Cancel' ( or 'Close' ) -> LastExitCode = `$messageboxreturn"" }"
+$FileContent = $FileContent + "`r`n" + "    '6'     { `$OutPutString = ""User selected button 'YES'    -> LastExitCode = `$messageboxreturn"" }"
+$FileContent = $FileContent + "`r`n" + "    '7'     { `$OutPutString = ""User selected button 'NO'     -> LastExitCode = `$messageboxreturn"" }"
+$FileContent = $FileContent + "`r`n" + "    default { $OutPutString = ""This script need improvement - MsgBox.PS1 returns '$messageboxreturn'     -> LastExitCode = $messageboxreturn""  }"
+$FileContent = $FileContent + "`r`n" + "    }"
+$FileContent = $FileContent + "`r`n" + "Write-OutPut `$OutPutString     #  only for SCCM and INTUNE required"
+$FileContent = $FileContent + "`r`n" + "exit `$messageboxreturn"
+# $FileContent
+Set-Content -Path $RandomFileName -Value $FileContent -ErrorAction Stop
+
+#endregion Create_Temp_Ps1File
+
+
+
+#region Decision_ServiceUI_or_OnlyPowerShell
+
+$RandomFileNameQuotes = """" + $RandomFileName + """"
+if ( $IsElevated -eq $True )  
+    {
+    Write-OutPut "Script is started with 'Elevation (RunAsAdmin)'.        -> ServiceUi.Exe will get used"
+    $ProcessExe          = "C:\ProgramData\Dell\DCU_DetectionRemediation\ServiceUI_x64.exe"
+    $ProcessArguments    = @(  "-process:explorer.exe", "$($env:SystemRoot)\System32\WindowsPowerShell\v1.0\powershell.exe", "-NoProfile", "-WindowStyle", "Hidden", "-ExecutionPolicy", "Bypass", "-File", $RandomFileNameQuotes) 
+    }
+else {
+    Write-OutPut "Script is started 'WITHOUT Elevation (NOT RunAsAdmin)'. -> ServiceUi.Exe cannot get used - using simple PowerShell - only for debugging"
+    $ProcessExe          = "$($env:SystemRoot)\System32\WindowsPowerShell\v1.0\powershell.exe"
+    $ProcessArguments    = @("-ExecutionPolicy", "ByPass", "-file", $RandomFileNameQuotes)
+    }
+#endregion Decision_ServiceUI_or_OnlyPowerShell
+
+#region Verify_ProcessExe_exists
+if (test-path $ProcessExe)
+        {
+        Write-OutPut  "'$ProcessExe' - exists"
+        }
+    else
+        {
+        Write-OutPut  "'$ProcessExe' -  is missing"
+        write-error   "'$ProcessExe' is missing" -category ResourceUnavailable
+        if ( test-Path $RandomFileName ) { remove-item -Path $RandomFileName -force  }
+        If ( $WriteTranscriptLog -eq $true )  { Stop-Transcript | out-null }
+        exit 9999
+        }
+Write-OutPut  ""
+#endregion Verify_ProcessExe_exists
+
+#region ProcessStart
+
+Write-OutPut  ("starting process:   ""$ProcessExe"" " + $ProcessArguments)
+$pinfo = New-Object System.Diagnostics.ProcessStartInfo
+$pinfo.FileName = $ProcessExe 
+$pinfo.RedirectStandardError = $true
+$pinfo.RedirectStandardOutput = $true
+$pinfo.UseShellExecute = $false
+$pinfo.Arguments = $ProcessArguments
+
+$p = New-Object System.Diagnostics.Process
+$p.StartInfo = $pinfo
+$p.Start() | Out-Null
+$p.WaitForExit()
+$stdout = $p.StandardOutput.ReadToEnd()
+$stderr = $p.StandardError.ReadToEnd()
+$ProcessExit = $p.ExitCode
+Write-OutPut "Process-ExitCode: $ProcessExit" 
+
+#endregion ProcessStart
+
+#region ProcessResult_Analysis
+
+<#     
+    ServiceUI.exe ( $stdout )   - if no user is logged on
+         =======================
+         Matched Processes
+         =======================
+         Process Not Found: [explorer.exe]
+
+         =======================
+         Exiting with [-1]
+         =======================
+#>
+ if ( -not $stderr ) {
+            if ( $stdout -match "Process Not Found: [explorer.exe]" )
+                {
+                $stderr=  "Process Not Found: [explorer.exe] `r`n    ->  no user is logged on" 
+                if ( $ProcessExit -eq -1 ) { $ProcessExit = 9000 }
+                }
+            }
+
+
+if ( $stdout ) { $stdout = $stdout.Replace("`n", "`n      "); Write-OutPut  "`r`nstdout of $ProcessExe : `r`n$stdout" }
+if ( $stderr ) { Write-OutPut  "`r`nstderr of $ProcessExe : `r`n`r`n    ERROR   `r`n`r`n $stderr`r`n`r`n" }
+
+#endregion ProcessResult_Analysis
+
+switch  ( $ProcessExit) {
+    '1'     { $OutPutString = "User selected button 'OKAY'   -> LastExitCode = $ProcessExit" }
+    '2'     { $OutPutString = "User selected button 'Cancel' -> LastExitCode = $ProcessExit" }
+    '6'     { $OutPutString = "User selected button 'YES'    -> LastExitCode = $ProcessExit" }
+    '7'     { $OutPutString = "User selected button 'NO'     -> LastExitCode = $ProcessExit" }
+    '9000'  { $OutPutString = "User not logged on            -> LastExitCode = $ProcessExit" }
+    default { $OutPutString = "This script need improvement - MsgBox.PS1 returns '$ProcessExit'     -> LastExitCode = $ProcessExit"  }
+    }
+
+#region Final_Cleanup
+if ( test-Path $RandomFileName ) { remove-item -Path $RandomFileName -force  }
+
+Remove-variable RandomFileName
+Remove-variable FileContent
+Remove-variable IsElevated
+Remove-variable IsService
+Remove-variable ProcessArguments
+Remove-variable ProcessExe
+Remove-variable pinfo
+Remove-variable p
+Remove-variable stderr
+Remove-variable stdout
+Remove-Variable LogFileName
+Remove-Variable LogFolder
+#endregion Final_Cleanup
+
+Write-OutPut $OutPutString     #  only for SCCM and INTUNE required
+If ( $WriteTranscriptLog -eq $true )  { Stop-Transcript | out-null }
+Exit $ProcessExit
