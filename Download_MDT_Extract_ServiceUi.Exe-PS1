@@ -1,0 +1,444 @@
+<# 
+    ServiceUi.Exe     is part of 
+
+    Microsoft Deployment Toolkit (MDT)
+    https://www.microsoft.com/en-us/download/details.aspx?id=54259
+    Version:           8456
+    Date Published:    7/15/2024
+#>
+
+
+cls
+
+# #######################################
+#    variables for baisc script functionality
+# #######################################
+[Int]$Script:ScriptReturn          = 99999
+[String]$Script:MyLogFolder        = 'C:\Dell'       # may get re-defined based on Elevation to '%Windir%\Logs' or to another folder
+[String]$Script:MyLogFileName      = $MyInvocation.MyCommand.Name    # has to get queried before MAIN() starts
+[String]$Script:MyLogFileFullPath  = $NULL
+$Script:TransScriptEnable          = $True
+$Script:TransScriptLogFile         = $NULL           # gets re-defined 
+$Script:IsElevated                 = $False          # will get detected by Main() ->  RunAsAdmin
+$Script:Ps1Ise_CmdLine             = "Ps1Ise"        # will get detected by Main() ->  "Ps1Ise" or "CmdLine"  - if cmd line -> less output 
+
+
+
+# #######################################
+#    variables which are script specific
+# #######################################
+# will be set by script, based on OS architecture
+[String]$Script:ScriptFileName           = "Download_MDT_Extract_ServiceUi.Exe"
+[String]$DownloadFolder                  = 'C:\Dell' # or $env:Temp 
+[String]$Script:MdtDownloadLink          = ""        #   https://download.microsoft.com/download/3/3/9/339be6 .......
+[String]$Script:MdtDownloadedMsi         = ""        #   MicrosoftDeploymentToolkit_x64.msi    or   MicrosoftDeploymentToolkit_x86.msi
+[String]$Script:ServiceUiExeExtracted    = ""        #   somewhere within %tmp%
+[String]$Script:ServiceUiExeName         = ""        #   'x64\ServiceUI.exe'                      or   'x86\ServiceUI.exe' 
+
+[String]$Script:ServiceUiExeBaseFolder   = "C:\Program Files\Microsoft Deployment Toolkit\Templates\Distribution\Tools"   # 'x64\ServiceUI.exe'     or   'x86\ServiceUi.exe'
+[String]$Script:ServiceUiExePath         = "$($Script:ServiceUiExeBaseFolder)\ServiceUI.Exe"  # will get changed by script
+                                        # C:\Program Files\Microsoft Deployment Toolkit\Templates\Distribution\Tools\x64\ServiceUI.exe
+
+
+
+Function Main {
+
+Begin 
+    {
+    $FktName = "Main() -"
+
+    $Script:IsElevated = Request-IsElevated
+    Write-Host "$FktName Script is started with Elevation = $IsElevated"
+    
+    #region LogFileName
+    #
+    #  for Intune usage  use a dedicated LogFileName - else the log file name is a GUID    
+    #
+    $Context = $([System.Security.Principal.WindowsIdentity]::GetCurrent().Name)
+    Write-Host "$FktName Script started in context '$Context'"
+    if ( $Context -eq "NT AUTHORITY\SYSTEM" -or $Context -eq "NT-AUTHORITÄT\SYSTEM") 
+        {
+        $Script:MyLogFileName = $Script:ScriptFileName
+        }
+    else
+        {
+        $Script:MyLogFileName = $Script:MyLogFileName
+        }
+    $Script:MyLogFileName     = $MyLogFileName.Replace(".PS1","")   
+    #endregion LogFileName
+
+    # Log-Folder - may get redefined in fkt based on Elevation to '%Windir%\Logs'
+    $Script:MyLogFolder        = Get-LogFolder_Based_On_Elevation -IsElevated $Script:IsElevated -OptionalDesiredAlternativeFolder $Script:MyLogFolder 
+    $MyLogFileFullPath         = "$Script:MyLogFolder\$Script:MyLogFileName"
+    
+    #region PrepareTransScript
+    if ( $Script:TransScriptEnable -eq $True ) {
+        $Script:TransScriptLogFile = $MyLogFileName.Replace(".log","") + '_TransScript.log'
+        $Script:TransScriptLogFile = "$($Script:MyLogFolder)\$Script:TransScriptLogFile"
+        Write-host "$FktName starting transscript to '$Script:TransScriptLogFile'"
+        If(   (Test-path $Script:TransScriptLogFile))         { $DeleteReturn = Remove-Item $Script:TransScriptLogFile -force}
+        If( ! (Test-path $Script:TransScriptLogFile))         { $NewFile      = New-Item    $Script:TransScriptLogFile -type File -force}
+        Start-Transcript -Path  $Script:TransScriptLogFile -Append | out-null
+        }
+    #endregion PrepareTransScript
+    }
+
+
+Process 
+    {
+    #
+    #    decide architecture and configure download links and target folders
+    #
+    $OSArchitecture = [System.Runtime.InteropServices.RuntimeInformation]::OSArchitecture
+    # "arm64","x86","x64"
+    Set-Architecture_Related_Values -osArch $OSArchitecture
+    
+
+    #
+    #  verify if ServiceUi.exe already exists on client PC
+    #
+    $Script:ServiceUiExePath = "$($Script:ServiceUiExeBaseFolder)\$($Script:ServiceUiExeName)"
+    if ( Test-Path $Script:ServiceUiExePath  )
+        {
+        $Script:ScriptReturn = 0
+        Write-Log -logLevel 1 -Message "$FktName ServiceUi.Exe already exists at '$Script:ServiceUiExePath' - nothing to do - Return $($Script:ScriptReturn)"  
+        return 
+        }
+    else
+        {
+        Write-Log -logLevel 2 -Message "$FktName ServiceUi.Exe is missing at '$Script:ServiceUiExePath'" 
+            
+        if ( $Script:IsElevated ) {
+            Write-Log -logLevel 1 -Message "$FktName -- 1:   download of Microsoft Deployment Toolkit - '$Script:MdtDownloadedMsi'"
+            Write-Log -logLevel 1 -Message "$FktName -- 2:   extract '$Script:MdtDownloadedMsi' to `%tmp`%"
+            Write-Log -logLevel 1 -Message "$FktName -- 3:   copy file to '$Script:ServiceUiExePath'"
+            Write-Log -logLevel 1 -Message "$FktName -- 4:   cleanup `%tmp`% ( extracted MSI )"
+            Write-Log -logLevel 1 -Message "$FktName -- 5:   remove downloaded MSI"
+            }
+        else
+            {
+            $Script:ScriptReturn = 5
+            Write-Log -logLevel 3 -Message "$FktName ELEVATION (Run-As-Admin) is required - EXIT $($Script:ScriptReturn)"
+            return 
+            }
+        }
+
+    #
+    #    run download
+    #
+    $DownloadResult = "not started"
+    $DownloadResult = Download-File -UriLink $Script:MdtDownloadLink  -TargetFolder $DownloadFolder -TargetFile $Script:MdtDownloadedMsi
+    Write-Log -logLevel 1 -Message "$FktName Download-File => $DownloadResult"
+    if ( $DownloadResult ) {
+        $Script:MdtDownloadedMsi = "$DownloadFolder\$Script:MdtDownloadedMsi"
+        }
+    else
+        {
+        $Script:MdtDownloadedMsi = ""
+        $Script:ScriptReturn = 1234
+        Write-Log -logLevel 1 -Message "$FktName download failed - Return $($Script:ScriptReturn)"  
+        return 
+        }
+
+
+    #
+    #    extract the downloaded MSI   - do not install
+    #
+    Write-Log -logLevel 1 -Message "$FktName extract the downloaded MSI to TMP folder - do not install"
+    $ExtractFolder = New-TemporaryFolder
+    Write-Log -logLevel 1 -Message "$FktName MSI-ExtractFolder = '$ExtractFolder'"
+    $ExtractMsi = Start-Process_With_Arguments -ProcessExe "MsiExec.exe" -ProcessArguments   @("/qn", "/a ",$Script:MdtDownloadedMsi , "TARGETDIR=$ExtractFolder")
+    Write-Log -logLevel 1 -Message "$FktName Extract-MSI => returns $ExtractMsi"
+    if ( $ExtractMsi -ne 0 )
+        {
+        if ( Test-Path $ExtractFolder )
+            {
+            Write-Log -logLevel 1 -Message "$FktName Cleanup Extract-Folder '$ExtractFolder'"
+            remove-item $ExtractFolder -Recurse     
+            }
+        $Script:ScriptReturn = $ExtractMsi
+        Write-Log -logLevel 1 -Message "$FktName Extract-MSI failed - Return $($Script:ScriptReturn)"  
+        return 
+        }
+    
+    if ( $OSArchitecture  -eq "x64" ) 
+        {
+        $SourceFile = "$ExtractFolder\Microsoft Deployment Toolkit\Templates\Distribution\Tools\x64\ServiceUi.exe"
+        }
+    else
+        {
+        $SourceFile = "$ExtractFolder\Microsoft Deployment Toolkit\Templates\Distribution\Tools\x86\ServiceUi.Exe"
+        }
+    
+    #
+    #    create Targetfolder for ServiceUi.Exe
+    #
+    if ( Test-Path $SourceFile )
+        {
+        $TargetFolder = "$($Script:ServiceUiExeBaseFolder)\$OSArchitecture"
+        if (!(Test-Path $TargetFolder))
+            {
+            Write-Log -logLevel 1 -Message "$FktName create targetfolder - '$TargetFolder'"
+            $newfolder = New-Item -Path $TargetFolder -ItemType Directory -Force
+            }
+        else
+            {
+            Write-Log -logLevel 1 -Message "$FktName targetfolder already exists - '$TargetFolder'"
+            }
+        }
+    else
+        {
+        Write-Log -logLevel 3 -Message "$FktName soemthing went wrong - ServiceUi.Exe is missing at '$SourceFile'"
+        if ( Test-Path $ExtractFolder )
+            {
+            Write-Log -logLevel 1 -Message "$FktName Cleanup Extract-Folder '$ExtractFolder'"
+            remove-item $ExtractFolder -Recurse              
+            }
+        if ( Test-Path $Script:MdtDownloadedMsi )
+            {
+            Write-Log -logLevel 1 -Message "$FktName Cleanup Downloaded-MSI '$Script:MdtDownloadedMsi'"
+            remove-item $Script:MdtDownloadedMsi -Recurse           
+            }
+        }
+    
+    
+    # $Script:ServiceUiExePath = "$($Script:ServiceUiExeBaseFolder)\$($Script:ServiceUiExeName)"
+    Write-Log -logLevel 1 -Message "$FktName File to copy from '$SourceFile'"  
+    Write-Log -logLevel 1 -Message "$FktName File to copy to   '$Script:ServiceUiExePath'"  
+
+    if (!(Test-Path $Script:ServiceUiExePath ))
+        {
+        Write-Log -logLevel 1 -Message "$FktName File - copy start"
+        Copy-Item -Path $SourceFile -Destination $Script:ServiceUiExePath 
+        }
+    else
+        {
+        Write-Log -logLevel 1 -Message "$FktName File - copy skipped - file already exists"
+        }
+    
+    if ( Test-Path $ExtractFolder )
+        {
+        Write-Log -logLevel 1 -Message "$FktName Cleanup Extract-Folder '$ExtractFolder'"
+        remove-item $ExtractFolder -Recurse     
+        }
+    if ( Test-Path $Script:MdtDownloadedMsi )
+        {
+        Write-Log -logLevel 1 -Message "$FktName Cleanup Downloaded-MSI '$Script:MdtDownloadedMsi'"
+        remove-item $Script:MdtDownloadedMsi
+        }
+    } # End Process
+End 
+    {   
+    $Script:ScriptReturn = 0
+    Write-Log -logLevel 1 -Message "$FktName script succeeded - Return $($Script:ScriptReturn)"  
+    return 
+    }
+
+
+    }
+
+Function Start-Process_With_Arguments {
+    Param(  [Parameter(Mandatory=$true)][String]$ProcessExe,
+            [Parameter(Mandatory=$true)][Array]$ProcessArguments)
+    $FktName = "Start-Process_With_Arguments() -"
+
+    Write-Log -logLevel 1 -Message ("$FktName starting process:   ""$ProcessExe"" " + $ProcessArguments)
+    $pinfo = New-Object System.Diagnostics.ProcessStartInfo
+    $pinfo.FileName = $ProcessExe 
+    $pinfo.RedirectStandardError = $true
+    $pinfo.RedirectStandardOutput = $true
+    $pinfo.UseShellExecute = $false
+    $pinfo.Arguments = $ProcessArguments
+
+    $p = New-Object System.Diagnostics.Process
+    $p.StartInfo = $pinfo
+    $p.Start() | Out-Null
+    $p.WaitForExit()
+    $stdout = $p.StandardOutput.ReadToEnd()
+    $stderr = $p.StandardError.ReadToEnd()
+    $ProcessExit = $p.ExitCode
+    Write-Log -logLevel 1 -Message "$FktName Process-ExitCode: $ProcessExit" 
+    Return $ProcessExit
+    }
+
+Function New-TemporaryFolder {
+
+    #  '%UserProfile%\AppData\Local\Temp\tmpD386.tmp'
+
+    # Create Temporary File and store object in %Temp%
+    $File = New-TemporaryFile
+
+    # Remove the temporary file
+    Remove-Item $File -Force
+
+    # Make a new folder based upon the old name - somewhere within %Temp%
+    $NewFolder = New-Item -Itemtype Directory -Path "$($ENV:Temp)\$($File.Name)" 
+    Return $NewFolder.FullName
+}
+
+Function Download-File {
+    Param(  [Parameter(Mandatory=$true)][String]$UriLink,
+            [Parameter(Mandatory=$true)][String]$TargetFolder,
+            [Parameter(Mandatory=$true)][String]$TargetFile,
+            [Parameter(Mandatory=$false,HelpMessage="Syntax like: 'http://MyProxy.com:8080'")][String]$ProxyServer = ""  )
+    $FktName = "Download-File() -"
+  #  Write-Log -logLevel 1 -Message "$FktName START"
+    $TargetFilePath = "$TargetFolder\$TargetFile"
+
+    if (!(Test-Path $TargetFolder)){$newfolder = New-Item -Path $TargetFolder -ItemType Directory -Force}
+    
+    if (!(Test-Path $TargetFilePath))     { Write-Log -logLevel 1 -Message "$FktName Downloading file to   '$TargetFilePath'"         }
+    else                                  { Write-Log -logLevel 1 -Message "$FktName File already downloaded to '$TargetFilePath'" ;return $True   }
+
+
+    
+    Write-Log -logLevel 1 -Message "$FktName Downloading file from '$UriLink'" 
+    if ( $Proxy )
+        {
+        Write-Log -logLevel 1 -Message "$FktName Downloading file via Proxy '$ProxyServer'" 
+        Invoke-WebRequest -Uri $UriLink -OutFile $TargetFilePath -UseBasicParsing -Proxy $ProxyServer
+        }
+    else
+        {
+        Write-Log -logLevel 1 -Message "$FktName Downloading file without Proxy " 
+        Invoke-WebRequest -Uri $UriLink -OutFile $TargetFilePath -UseBasicParsing 
+        }
+    if (!(Test-Path $TargetFilePath))     { return $false  }
+    else                                  { return $True   }
+    }
+
+function Set-Architecture_Related_Values {
+    Param([Parameter(Mandatory=$true)][ValidateSet("arm64","x86","x64")][String]$osArch)
+    $FktName = "Set-Architecture_Related_Values() -"
+    switch ($osArch) {
+        arm64 { 
+            Write-Log -logLevel 1 -Message "$FktName Running on ARM64 OSArchitecture" 
+            $Script:MdtDownloadLink  = "https://download.microsoft.com/download/3/3/9/339be62d-b4b8-4956-b58d-73c4685fc492/MicrosoftDeploymentToolkit_x64.msi"
+            $Script:MdtDownloadedMsi = "MicrosoftDeploymentToolkit_x64.msi" 
+            $Script:ServiceUiExeName = 'x64\ServiceUI.exe' 
+            }
+        x86 { 
+            Write-Log -logLevel 1 -Message "$FktName Running on 32-bit OSArchitecture" 
+            $Script:MdtDownloadLink = "https://download.microsoft.com/download/3/3/9/339be62d-b4b8-4956-b58d-73c4685fc492/MicrosoftDeploymentToolkit_x86.msi"
+            $Script:MdtDownloadedMsi = "MicrosoftDeploymentToolkit_x86.msi" 
+            $Script:ServiceUiExeName = 'x86\ServiceUI.exe' 
+            }
+        x64 { 
+            Write-Log -logLevel 1 -Message "$FktName Running on 64-bit OSArchitecture" 
+            $Script:MdtDownloadLink = "https://download.microsoft.com/download/3/3/9/339be62d-b4b8-4956-b58d-73c4685fc492/MicrosoftDeploymentToolkit_x64.msi"
+            $Script:MdtDownloadedMsi = "MicrosoftDeploymentToolkit_x64.msi" 
+            $Script:ServiceUiExeName = 'x64\ServiceUI.exe' 
+            }
+
+#  never reach this point because of Function-Paramter ValidateSet
+#        default { 
+#            "Fallback logic to set '$osArch' "
+#            }
+        }
+    }
+
+Function Request-IsElevated {
+    [cmdletbinding()]
+    param ( [Parameter(Mandatory = $false)][Bool]$MyDebug = $false)
+    
+    [Bool]$IsElevated = $False
+    $FktName = "Request-IsElevated() -"
+    if ((New-Object Security.Principal.WindowsPrincipal([Security.Principal.WindowsIdentity]::GetCurrent())).IsInRole([Security.Principal.WindowsBuiltInRole]::Administrator))
+        {    
+        if ( $MyDebug -eq $True ) { Write-Log -logLevel 1 -Message "$FktName DEBUG Script is started with 'Elevation (RunAsAdmin)'."  }
+        $IsElevated = $True
+        }
+    else {    
+        if ( $MyDebug -eq $True ) { Write-Log -logLevel 1 -Message "$FktName DEBUG Script is started 'WITHOUT Elevation (NOT RunAsAdmin)'."  }
+        $IsElevated = $False  
+        }
+    return $IsElevated
+    }
+
+Function Get-LogFolder_Based_On_Elevation {
+    [cmdletbinding()]
+    param ( [Parameter(Mandatory = $True)] [Bool]  $IsElevated,
+            [Parameter(Mandatory = $True)] [string]$OptionalDesiredAlternativeFolder,
+            [Parameter(Mandatory = $false)][Bool]  $MyDebug = $false )
+
+    $FktName = "Get-LogFolder_Based_On_Elevation() -"
+    write-host "$FktName IsElevated           = '$IsElevated'"
+    write-host "$FktName Desired Log Folder   = '$OptionalDesiredAlternativeFolder'    (will get ignored if ELEVATED)"
+
+    if ( $IsElevated ) 
+        {
+        # elevation required to access this folder
+        $ReturnPath = "$env:SystemDrive\Windows\logs"
+        }
+    else {    
+        $ReturnPath = $OptionalDesiredAlternativeFolder
+        If(!(test-path $ReturnPath))  {new-item $ReturnPath -type directory -force}
+        }
+    write-host "$FktName resulting Log Folder = '$ReturnPath'"
+    write-host "$FktName resulting Log File   = '$ReturnPath\$Script:MyLogFileName'"
+
+    return $ReturnPath
+    }
+
+Function Write-Log 	{
+    param(  [Parameter(Mandatory = $false)][Int]$LogLevel = 1, 
+            [Parameter(Mandatory = $True)][String]$Message,
+            [Parameter(Mandatory = $false)][Bool]$MyDebug = $false )
+
+	[String]$Date = (Get-Date -Format "yyyy-MM-dd")
+    #       $Time = -join @((Get-Date -Format "HH:mm:ss.fff"),  "+", (Get-WmiObject -Class Win32_TimeZone | Select-Object -ExpandProperty Bias))
+    [String]$Time =         (Get-Date -Format "HH:mm:ss.")    
+    [String]$LogText = "$Date--$Time $LogLevel : $Message"
+    write-host  $LogText	
+	}
+
+Function Request-Ps1Ise_CmdLine {
+    [cmdletbinding()]
+    param ( [Parameter(Mandatory = $false)][Bool]$MyDebug = $false)
+    
+    [String]$Ps1Ise_CmdLine = "Ps1Ise"   #  or "CmdLine"  - if cmd line -> less output 
+    $FktName = "Request-Ps1Ise_CmdLine() -"
+
+    if ($host.name -eq "Windows PowerShell ISE Host") 
+        { 
+        # Write-Log -LogLevel 1 -Message "Script is started from PowerShell-ISE - using 'return' to keep ISE open"; Return $Script:ScriptReturn  
+        $Ps1Ise_CmdLine = "Ps1Ise"
+        }
+    else
+        { # Write-Log -LogLevel 1 -Message "Script is started from console - using 'exit', required for Intune remediation "; 
+        $Ps1Ise_CmdLine = "CmdLine"
+        }
+    return $Ps1Ise_CmdLine
+    }
+
+
+
+
+
+Main
+$Script:Ps1Ise_CmdLine  = Request-Ps1Ise_CmdLine
+
+#region StopTransScript
+if ( $Script:TransScriptEnable -eq $True ) { 
+    Write-host "$FktName stopping transscript - result at '$Script:TransScriptLogFile'"
+    Stop-Transcript -ErrorAction SilentlyContinue | out-null
+    }
+#endregion StopTransScript
+
+# for Intune Console
+Write-Output "END OF PS1 - Script is returning '$Script:ScriptReturn'"
+
+
+
+
+if ($Script:Ps1Ise_CmdLine -eq "Ps1Ise") 
+    { 
+     Write-Log -logLevel 1 -Message "END OF PS1 - Script is started from PowerShell-ISE - using 'return' to keep POWERSHELL_ISE.EXE open"
+     Return $Script:ScriptReturn  
+    }
+else
+    { # Write-Log -logLevel 1 -Message "END OF PS1 - Script is started from console - using 'exit', required for Intune remediation "; 
+    Exit $Script:ScriptReturn  
+    }
+
+
