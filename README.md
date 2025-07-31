@@ -12,3 +12,10 @@ Result should be something like this
 The logfile of this PS1 script will look like this
 
 <img width="1685" height="861" alt="image" src="https://github.com/user-attachments/assets/7000bbca-37d1-4621-b53d-f48446828d6c" />
+
+
+##############################################################################
+
+Download_MDT_Extract_ServiceUi.Exe.PS1 - log content - example
+
+<img width="2349" height="699" alt="image" src="https://github.com/user-attachments/assets/1c11acd2-753d-424c-8194-9112e7c1e520" />
