@@ -22,7 +22,7 @@ Download_MDT_Extract_ServiceUi.Exe.PS1 - log content - example   - ServiceUi.Exe
 
 ##############################################################################
 
-Download_MDT_Extract_ServiceUi.Exe.PS1 - log content - example   - ServiceUi.Exe already exists
+Download_MDT_Extract_ServiceUi.Exe.PS1 - log content - example   - ServiceUi.Exe is missing
 
 <img width="1641" height="717" alt="image" src="https://github.com/user-attachments/assets/1f17f1f5-69fa-4882-be3f-4fe48e8f4602" />
 
