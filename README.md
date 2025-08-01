@@ -16,6 +16,14 @@ The logfile of this PS1 script will look like this
 
 ##############################################################################
 
-Download_MDT_Extract_ServiceUi.Exe.PS1 - log content - example
+Download_MDT_Extract_ServiceUi.Exe.PS1 - log content - example   - ServiceUi.Exe already exists
 
-<img width="2349" height="699" alt="image" src="https://github.com/user-attachments/assets/1c11acd2-753d-424c-8194-9112e7c1e520" />
+<img width="1677" height="272" alt="image" src="https://github.com/user-attachments/assets/ff286af6-7cba-488d-b33e-baed7b66e4e0" />
+
+##############################################################################
+
+Download_MDT_Extract_ServiceUi.Exe.PS1 - log content - example   - ServiceUi.Exe already exists
+
+<img width="1641" height="717" alt="image" src="https://github.com/user-attachments/assets/1f17f1f5-69fa-4882-be3f-4fe48e8f4602" />
+
+
